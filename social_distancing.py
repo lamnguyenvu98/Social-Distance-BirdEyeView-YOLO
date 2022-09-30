@@ -1,7 +1,8 @@
 import cv2
 import numpy as np
+from deep_sort import DeepSort
 from helper_functions import *
-import matplotlib.pyplot as plt
+from copy import deepcopy
 import time
 
 # Source point calib trong calib.py
@@ -54,31 +55,46 @@ frame_height = int(video.get(4))
 fps = int(video.get(cv2.CAP_PROP_FPS))
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 out = cv2.VideoWriter("res.mp4", fourcc, fps, (frame_width, frame_height))
+
+deepsort = DeepSort('models/ckpt.t7', use_cuda=False)
+
+green_box, red_box, red_bev_lines = [None] * 3
+
 while True:
     ret, frame = video.read()
     if not ret:
         break
     image_height, image_width = frame.shape[:2]
-    cv2.polylines(frame, [points], True, (0, 255, 0), thickness=4)
+    normal_frame = frame.copy()
+    cv2.polylines(normal_frame, [points], True, (0, 255, 0), thickness=4)
     #image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     warped = cv2.warpPerspective(frame, H_matrix, dst_size)
     t1 = time.time()
-    classes, _ , boxes = model.detect(frame, confidence_threshold, nms_threshold)
+    classes, confidences , boxes = model.detect(frame, confidence_threshold, nms_threshold)
     list_boxes = []
+    list_confidences = []
 
-    for (classid, box) in zip(classes, boxes):
-        if class_names[classid] != 'person': continue
-        x, y, w, h = box
-        center_x, center_y = int(x+w/2), int(y+h/2)
-        list_boxes.append([x, y, w, h, center_x, center_y])
-        
-    birds_eye_points = compute_point_perspective_transformation(H_matrix, list_boxes)
+    for (classid, confidence, box) in zip(classes, confidences, boxes):
+        if class_names[classid] == 'person':
+            x, y, w, h = box
+            center_x, center_y = int(x+w/2), int(y+h/2)
+            list_boxes.append([center_x, center_y, w, h])
+            list_confidences.append(confidence)
+
+    if len(list_boxes) > 0:
+        # outputs contains multiple np.array([x1, y1, w, h, track_id])
+        outputs = deepsort.update(np.array(list_boxes), deepcopy(confidences), frame)
+    if len(outputs) > 0:
+        birds_eye_points = compute_point_perspective_transformation(H_matrix, deepcopy(outputs))
+        green_box, red_box, red_bev_lines = get_red_green_boxes(min_distance, birds_eye_points, outputs)
     
-    green_box, red_box, pp, ppp = get_red_green_boxes(min_distance, birds_eye_points, list_boxes)
+    birds_eye_view_image = get_birds_eye_view_image(green_box, red_box,
+                                                    eye_view_height=image_height,
+                                                    eye_view_width=image_width//2, 
+                                                    red_bev_lines=red_bev_lines, 
+                                                    image=warped)
     
-    birds_eye_view_image = get_birds_eye_view_image(green_box, red_box,eye_view_height=image_height,eye_view_width=image_width//2, points=pp, image=warped)
-    
-    box_red_green_image = get_red_green_box_image(frame.copy(),green_box, red_box, ppp)
+    box_red_green_image = get_red_green_box_image(frame.copy(),green_box, red_box)
     
     combined_image = np.concatenate((birds_eye_view_image,box_red_green_image), axis=1)
     resize_combined_image = cv2.resize(combined_image, (1440, 540))

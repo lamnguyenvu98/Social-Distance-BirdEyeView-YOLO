@@ -82,7 +82,8 @@ def get_image_boxes(outputs, image_width, image_height, classes, confidence_thre
 
 
 def compute_point_perspective_transformation(matrix, boxes):
-    list_downoids = [[box[4], box[5] + box[3] // 2] for box in boxes]
+    # downoid = (x1 + w//2, y1)
+    list_downoids = [[box[0] + box[2] // 2, box[1]] for box in boxes]
     list_points_to_detect = np.float32(list_downoids).reshape(-1, 1, 2)
     transformed_points = cv2.perspectiveTransform(list_points_to_detect, matrix)
     transformed_points_list = list()
@@ -92,36 +93,33 @@ def compute_point_perspective_transformation(matrix, boxes):
 
 
 def get_red_green_boxes(distance_allowed, birds_eye_points, boxes):
-    red_boxes = []
-    green_boxes = []
-    points, bbs = [], []
-    #print("bird eye point: {}".format(birds_eye_points))
-    #print("boxes: {}".format(boxes))
+    red_boxes = list()
+    green_boxes = list()
+    red_bev_lines = list()
+    # red_lines = []
+
+    # newboxes is a list contains tuples, each tuple contains (x1, y1, w, h, track_id, bev_x, bev_y)
     new_boxes = [tuple(box) + tuple(result) for box, result in zip(boxes, birds_eye_points)]
-    #print("new boxes: ", new_boxes)
+
     for i in range(0, len(new_boxes) - 1):
         for j in range(i + 1, len(new_boxes)):
-            cxi, cyi = new_boxes[i][6:]
-            cxj, cyj = new_boxes[j][6:]
-            distance = eucledian_distance([cxi, cyi], [cxj, cyj])
+            bev_xi, bev_yi = new_boxes[i][5:]
+            bev_xj, bev_yj = new_boxes[j][5:]
+            distance = eucledian_distance([bev_xi, bev_yi], [bev_xj, bev_yj])
             #print("New boxes p1: {} , p2: {} ".format(new_boxes[i][4:6], new_boxes[j][4:6]))
             if distance < distance_allowed:
                 #cv2.line(frame, (cxi, cyi), (cxj, cyj), (0,0,255), 2)
-                pp1, pp2 = [cxi, cyi], [cxj, cyj]
-                #print("pp1: {}, pp2: {}".format(pp1,pp2))
-                bb1, bb2 = new_boxes[i][4:6], new_boxes[j][4:6]
-                #print("ppp1: {}, ppp2: {}".format(ppp1,ppp2))
+                track_id = new_boxes[j][4]
+                bev1, bev2 = [bev_xi, bev_yi], [bev_xj, bev_yj]
+                # bb1, bb2 = new_boxes[i][4:6], new_boxes[j][4:6]
                 red_boxes.append(new_boxes[i])
                 red_boxes.append(new_boxes[j])
-                #dist.append(distance)
-                points.append([pp1, pp2])
-                bbs.append([bb1, bb2])
-
+                red_bev_lines.append(tuple([bev1, bev2]))
+                # red_lines.append([bb1, bb2, track_id])
 
     green_boxes = list(set(new_boxes) - set(red_boxes))
     red_boxes = list(set(red_boxes))
-    #print("Points: ", point)
-    return (green_boxes, red_boxes, points, bbs)
+    return (green_boxes, red_boxes, red_bev_lines)
 
 
 def eucledian_distance(point1, point2):
@@ -130,32 +128,41 @@ def eucledian_distance(point1, point2):
     return sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
 
 
-def get_birds_eye_view_image(green_box, red_box, eye_view_height, eye_view_width, points, image):
-
+def get_birds_eye_view_image(green_box, red_box, eye_view_height, eye_view_width, red_bev_lines, image):
     blank_image = image
     blank_image = cv2.imread('background.png')
-    cv2.putText(blank_image, "RISK: "+str(len(red_box)), (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 2, cv2.LINE_AA)
-    cv2.putText(blank_image, "SAFE: "+str(len(green_box)), (400, 80), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 2, cv2.LINE_AA)
-
-    for point in green_box:
-        cv2.circle(blank_image, tuple([point[6], point[7]]), 20, (0, 255, 0), -5)
-    for point in red_box:
-        cv2.circle(blank_image, tuple([point[6], point[7]]), 20, (0, 0, 255), -5)
-    for pp in points:
-        #print("P1: {}, P2: {}".format(tuple(pp[0]), tuple(pp[1]) ) )
-        cv2.line(blank_image, tuple(pp[0]),tuple(pp[1]), (0, 0, 255), 10)
-        #cv2.putText(blank_image,str(distance), tuple(pp[0]), cv2.FONT_HERSHEY_PLAIN,0.5,(255, 255, 255), 2)
+    
+    num_risk = 0
+    num_safe = 0
+    if (green_box is not None) and (red_box is not None) and (red_bev_lines is not None):
+        num_risk = len(red_box)
+        num_safe = len(green_box)
+        for green_point in green_box:
+            cv2.circle(blank_image, tuple([green_point[5], green_point[6]]), 20, (0, 255, 0), -5)
+            cv2.putText(blank_image,str(green_point[4]), tuple([green_point[5] + 10, green_point[6] - 10]), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 3)
+        for red_point in red_box:
+            cv2.circle(blank_image, tuple([red_point[5], red_point[6]]), 20, (0, 0, 255), -5)
+            cv2.putText(blank_image, str(red_point[4]), tuple([red_point[5] + 10, red_point[6] - 10]), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 3)
+        for red_pair in red_bev_lines:
+            #print("P1: {}, P2: {}".format(tuple(pp[0]), tuple(pp[1]) ) )
+            cv2.line(blank_image, red_pair[0], red_pair[1], (0, 0, 255), 10)
+            # cv2.putText(blank_image,str(bev_point[2]), tuple(bev_point[0], bev_point[1] - 5), cv2.FONT_HERSHEY_PLAIN, 0.5,(255, 255, 255), 2)
+    
+    cv2.putText(blank_image, "RISK: "+ str(num_risk), (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 2, cv2.LINE_AA)
+    cv2.putText(blank_image, "SAFE: "+ str(num_safe), (400, 80), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 2, cv2.LINE_AA)
+    
     blank_image = cv2.resize(blank_image, (eye_view_width, eye_view_height))
     return blank_image
 
 
-def get_red_green_box_image(new_box_image, green_box, red_box, pointpp):
-    for point in green_box:
-        cv2.rectangle(new_box_image, (point[0], point[1]), (point[0] + point[2], point[1] + point[3]), (0, 255, 0), 2)
-    for (point, ppp) in zip(red_box, pointpp):
-        cv2.rectangle(new_box_image, (point[0], point[1]), (point[0] + point[2], point[1] + point[3]), (0, 0, 255), 2)
-        cv2.line(new_box_image, ppp[0], ppp[1], (0, 0, 255), 2)
-    #for ppp in pointpp:
-        #print("p1: {}, p2: {}".format(ppp[0], ppp[1]))
-        #cv2.line(new_box_image, ppp[0], ppp[1], (0, 0, 255), 2)
+def get_red_green_box_image(new_box_image, green_box, red_box):
+    if (green_box is not None) and (red_box is not None):
+        for green_bbox in green_box:
+            cv2.rectangle(new_box_image, (green_bbox[0], green_bbox[1]), (green_bbox[0] + green_bbox[2], green_bbox[1] + green_bbox[3]), (0, 255, 0), 2)
+        for red_bbox in red_box:
+            cv2.rectangle(new_box_image, (red_bbox[0], red_bbox[1]), (red_bbox[0] + red_bbox[2], red_bbox[1] + red_bbox[3]), (0, 0, 255), 2)
+            # cv2.line(new_box_image, ppp[0], ppp[1], (0, 0, 255), 2)
+        #for ppp in pointpp:
+            #print("p1: {}, p2: {}".format(ppp[0], ppp[1]))
+            #cv2.line(new_box_image, ppp[0], ppp[1], (0, 0, 255), 2)
     return new_box_image
